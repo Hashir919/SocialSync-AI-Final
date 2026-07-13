@@ -1,105 +1,164 @@
+"""
+tflite_inference.py — SocialSync AI Model Inference Engine
+Primary model: final_reply_modelv3 (T5ForConditionalGeneration)
+"""
+
 import os
-import torch
 import re
-from transformers import T5TokenizerFast, T5ForConditionalGeneration
+import torch
 
-# Global cache for the reply generator using the HuggingFace LaMini-Flan-T5-77M model
-_reply_generator = None
+_generator = None   # lazy singleton
 
-# Generation parameters (can be tuned per use)
-MAX_LENGTH = 64
-REPEAT_PENALTY = 1.3
-TEMPERATURE = 0.0
-TOP_P = 0.95
-TOP_K = 50
 
-def clean_response(text: str) -> str:
-    """Removes common filler phrases or incomplete patterns from the model output."""
-    text = re.sub(r"Please try again later\.", "", text, flags=re.IGNORECASE)
-    # Remove metadata prefixes
-    text = re.sub(r"^(Response|Coach response|Interviewer response|Partner response|Assistant|Coach):\s*", "", text, flags=re.IGNORECASE)
+# ─── Prompt wrapping ──────────────────────────────────────────────────────────
+
+def _wrap_prompt(instruction: str) -> str:
+    """Wrap instruction in the LaMini-Flan-T5 training format for best output."""
+    return (
+        "Below is an instruction that describes a task. "
+        "Write a response that appropriately completes the request.\n\n"
+        f"### Instruction:\n{instruction}\n\n"
+        "### Response:"
+    )
+
+
+# ─── Identity guard ───────────────────────────────────────────────────────────
+
+_BANNED_PHRASES = [
+    "google ai", "gemini", "chatgpt", "gpt", "openai", "claude", "anthropic",
+    "llama", "hugging face", "huggingface", "i am an ai language model",
+    "as an ai language model", "as a large language model", "as a google",
+    "i'm powered by", "i am powered by",
+]
+
+_IDENTITY_TRIGGERS = [
+    "who are you", "what are you", "what ai", "which ai", "are you gemini",
+    "are you chatgpt", "are you gpt", "are you google", "your name",
+    "what's your name", "what is your name",
+]
+
+_IDENTITY_RESPONSE = (
+    "I'm SocialSync AI, your personal communication coach. "
+    "I'm here to help you improve conversations, build confidence, "
+    "prepare for interviews, navigate social interactions, and develop your communication skills."
+)
+
+
+def _is_identity_question(text: str) -> bool:
+    t = text.lower().strip()
+    return any(phrase in t for phrase in _IDENTITY_TRIGGERS)
+
+
+def _sanitize(text: str) -> str:
+    """Remove any mention of external AI providers from model output."""
+    lower = text.lower()
+    for phrase in _BANNED_PHRASES:
+        if phrase in lower:
+            # Replace the whole sentence containing the banned phrase
+            sentences = re.split(r'(?<=[.!?])\s+', text)
+            text = " ".join(
+                s for s in sentences
+                if not any(p in s.lower() for p in _BANNED_PHRASES)
+            ).strip()
+            break
     return text.strip()
 
-class PyTorchReplyGenerator:
-    """Encapsulates loading and inference for the T5 model using PyTorch.
-    The class caches the tokenizer and model, and provides a generate method
-    with sensible defaults to reduce repetition and improve response quality.
-    """
-    def __init__(self, model_name: str = "MBZUAI/LaMini-Flan-T5-77M"):
-        # Resolve the paths to local directories
-        models_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "ai_models"))
-        v2_dir = os.path.join(models_dir, "final_reply_modelv2")
-        fallback_dir = os.path.join(models_dir, "final_reply_model")
 
+# ─── Generator class ──────────────────────────────────────────────────────────
+
+class SocialSyncGenerator:
+    """
+    Wraps final_reply_modelv3 (T5ForConditionalGeneration) for inference.
+    Falls back to final_reply_modelv2 if v3 is not available.
+    """
+
+    def __init__(self):
         from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-        
-        try:
-            print(f"[PyTorch Generator] Loading local HuggingFace model from {v2_dir} …")
-            self.tokenizer = AutoTokenizer.from_pretrained(v2_dir, local_files_only=True)
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(v2_dir, local_files_only=True)
-        except Exception as e:
-            print(f"[PyTorch Generator] Failed loading from {v2_dir}: {e}. Trying fallback from {fallback_dir}…")
-            self.tokenizer = AutoTokenizer.from_pretrained(fallback_dir, local_files_only=True)
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(fallback_dir, local_files_only=True)
 
-        # Ensure the model is in evaluation mode for inference
-        self.model.eval()
-        print("[PyTorch Generator] Model and tokenizer loaded successfully.")
+        models_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "ai_models")
+        )
+        v3 = os.path.join(models_dir, "final_reply_modelv3")
+        v2 = os.path.join(models_dir, "final_reply_modelv2")
 
-    def generate(
-        self,
-        prompt: str,
-        max_length: int = 64,
-        repetition_penalty: float = 1.3,
-        temperature: float = 0.0,
-        no_repeat_ngram_size: int = 3,
-    ) -> str:
-        """Generate a response for *prompt*.
+        for path, label in [(v3, "final_reply_modelv3"), (v2, "final_reply_modelv2")]:
+            try:
+                print(f"[SocialSync AI] Loading {label} …")
+                self.tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True)
+                self.model = AutoModelForSeq2SeqLM.from_pretrained(path, local_files_only=True)
+                self.model.eval()
+                print(f"[SocialSync AI] {label} loaded successfully.")
+                self._model_label = label
+                return
+            except Exception as e:
+                print(f"[SocialSync AI] {label} failed: {e}")
 
-        Parameters
-        ----------
-        prompt: str
-            The input text to generate a reply for.
-        max_length: int, default 64
-            Maximum token length of the generated reply.
-        repetition_penalty: float, default 1.3
-            Penalises repeated tokens.
-        temperature: float, default 0.0
-            Controls randomness; 0.0 yields deterministic output.
-        no_repeat_ngram_size: int, default 3
-            Prevents the model from repeating n‑grams of this size.
-        """
-        inputs = self.tokenizer(prompt, return_tensors="pt")
+        raise RuntimeError("No model could be loaded. Check ai_models/ directory.")
+
+    def generate(self, instruction: str, temperature: float = 0.7) -> str:
+        prompt = _wrap_prompt(instruction)
+        inputs = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=512,
+        )
         with torch.no_grad():
-            generation_kwargs = {
-    "max_new_tokens": 80,
-    "do_sample": False,
-    "num_beams": 4,
-    "early_stopping": True,
-    "repetition_penalty": 1.2,
-    "no_repeat_ngram_size": 3,
-}
-            outputs = self.model.generate(**inputs, **generation_kwargs)
-        # Decode and clean up output
-        return self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+            use_sampling = temperature > 0.0
+            kwargs = {
+                "max_new_tokens": 150,
+                "do_sample": use_sampling,
+                "repetition_penalty": 1.3,
+                "no_repeat_ngram_size": 3,
+            }
+            if use_sampling:
+                kwargs["temperature"] = max(temperature, 0.65)
+                kwargs["top_p"] = 0.92
+                kwargs["top_k"] = 50
+                kwargs["num_beams"] = 1
+            else:
+                kwargs["num_beams"] = 4
 
-def generate_tflite_reply(prompt: str, temperature: float = 0.0) -> str:
-    """Primary reply engine for the application.
+            outputs = self.model.generate(**inputs, **kwargs)
 
-    This function lazily initialises a global :class:`PyTorchReplyGenerator`
-    instance on first call and re‑uses it for subsequent requests, avoiding
-    the costly model reload cost.
+        raw = self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+
+        # Clean up echoed prompt fragments
+        if "### Response:" in raw:
+            raw = raw.split("### Response:")[-1].strip()
+        raw = re.sub(
+            r"^(Response|Coach|Assistant|SocialSync AI):\s*",
+            "", raw, flags=re.IGNORECASE,
+        ).strip()
+
+        return raw
+
+
+# ─── Public API ───────────────────────────────────────────────────────────────
+
+def generate_tflite_reply(instruction: str, temperature: float = 0.7) -> str:
     """
-    global _reply_generator
-    if _reply_generator is None:
+    Primary inference entry point used by model_pipeline.py.
+    - Intercepts identity questions before hitting the model.
+    - Sanitizes output to remove any mention of external AI providers.
+    - Returns empty string on failure so model_pipeline can use coaching_engine fallback.
+    """
+    # Handle identity questions without calling the model
+    if _is_identity_question(instruction):
+        return _IDENTITY_RESPONSE
+
+    global _generator
+    if _generator is None:
         try:
-            _reply_generator = PyTorchReplyGenerator()
+            _generator = SocialSyncGenerator()
         except Exception as e:
-            print(f"[PyTorch Generator] Failed to initialise HuggingFace model: {e}")
-            raise
+            print(f"[SocialSync AI] Model init failed: {e}")
+            return ""
+
     try:
-        response = _reply_generator.generate(prompt, temperature=temperature)
-        return clean_response(response)
+        reply = _generator.generate(instruction, temperature=temperature)
+        reply = _sanitize(reply)
+        return reply
     except Exception as e:
-        print(f"[PyTorch Generator] Inference error: {e}")
-        return "I couldn't generate a response right now. Please try again later."
+        print(f"[SocialSync AI] Inference error: {e}")
+        return ""

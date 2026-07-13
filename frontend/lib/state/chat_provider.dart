@@ -22,7 +22,7 @@ class ChatProvider extends ChangeNotifier {
 
     try {
       final response = await http.post(
-        Uri.parse('http://127.0.0.1:8002/generate'),
+        Uri.parse('http://127.0.0.1:8000/generate'),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({"prompt": text.trim()}),
       );

@@ -504,7 +504,7 @@ def rewrite_message_hf(text: str, context: str, tone: str = "Confident") -> tupl
     print(f"[AI Pipeline] Triggered Rewrite Engine for text: '{text}' in context: '{context}' with tone: '{tone}'")
     
     try:
-        from tflite_inference import generate_tflite_reply
+        from scripts.tflite_inference import generate_tflite_reply
         # Use existing Emotion Detection
         emotion_info = analyze_emotion_hf(text)
         emotion = emotion_info.get("emotion", "Neutral")
@@ -682,105 +682,64 @@ def get_live_coaching_tips(anxiety: int, confidence: int, clarity: int, pace: in
 
 
 def generate_coach_response_hf(user_input: str, persona: str, context: str, session_id: str = "default") -> str:
-    """Generate dynamic conversation response using memory-aware primary PyTorch model."""
+    """
+    Primary response generator for SocialSync AI.
+    - Uses final_reply_modelv3 for rewriting tasks.
+    - Uses coaching_engine for all dialogue/coaching responses.
+    - Intercepts identity questions to always return SocialSync AI identity.
+    - Maintains session memory for context-aware follow-ups.
+    """
+    from scripts.coaching_engine import get_coaching_response, _is_identity_question, IDENTITY_RESPONSE
+
     input_lower = user_input.lower().strip()
     persona_lower = persona.lower()
-    
-    # 1. State initialization/reset check
-    input_words = set(input_lower.split())
-    is_initial = any(w in input_words for w in ["hello", "hi", "hey", "start", "begin", "ready", "greet"]) or len(user_input) < 3
-    
-    # Retrieve conversation history
+
+    # ── Identity guard — always answer before anything else ──
+    if _is_identity_question(input_lower):
+        return IDENTITY_RESPONSE
+
+    # ── Session history ──────────────────────────────────────
     history = get_session_history(session_id)
+    is_initial = (
+        any(w in input_lower.split() for w in ["hello", "hi", "hey", "start", "begin", "ready"])
+        or len(user_input.strip()) < 3
+    )
     if is_initial:
         history.clear()
-        
-    # Check if user wants dynamic feedback/score sheet
-    wants_feedback = any(w in input_lower for w in ["feedback", "score", "evaluate", "results", "how did i do", "end session", "conclude"])
-    
-    if wants_feedback:
-        history_str = ""
-        for u, b in history[-6:]:
-            history_str += f"User: {u}\nCoach: {b}\n"
-        
-        prompt = (
-            f"You are a communications expert. Evaluate the following conversation history and generate a structured evaluation:\n"
-            f"{history_str}\n"
-            f"Provide feedback in this format:\n"
-            f"Conversation Practice Feedback:\n"
-            f"- **Confidence Level**: [Dynamic percentage]%\n"
-            f"- **Clarity & Flow**: [Dynamic percentage]%\n"
-            f"- **Empathy & Listening**: [Dynamic percentage]%\n"
-            f"Actionable Tips:\n"
-            f"1. [Dynamic custom suggestion 1]\n"
-            f"2. [Dynamic custom suggestion 2]"
+
+    # ── Rewrite mode — use final_reply_modelv3 ───────────────
+    if "rewrite" in persona_lower:
+        instruction = (
+            f"Rewrite this message to sound more confident, clear, and professional: "
+            f"\"{user_input}\""
         )
         try:
-            from tflite_inference import generate_tflite_reply
-            reply = generate_tflite_reply(prompt, temperature=0.2)
-        except Exception:
-            reply = (
-                "That concludes our practice session!\n\n"
-                "- **Confidence Level**: 85%\n"
-                "- **Clarity & Pacing**: 80%\n"
-                "- **Empathy & Listening**: 85%\n\n"
-                "**Actionable Tips:**\n"
-                "1. Keep practicing active listening.\n"
-                "2. Try to ask open-ended questions."
-            )
-        return post_process_response(reply)
+            from scripts.tflite_inference import generate_tflite_reply
+            reply = generate_tflite_reply(instruction, temperature=0.7)
+        except Exception as e:
+            print(f"[SocialSync AI] Rewrite model error: {e}")
+            reply = ""
 
-    # Context & instruction mapping
-    if "interview" in persona_lower:
-        role = "Software Developer"
-        system_instruction = f"You are conducting a professional mock interview for a {role} position. Ask the user one dynamic interview question at a time. Do not give the answers. Keep your response concise, professional, and natural."
-    elif "dating" in persona_lower:
-        system_instruction = "You are a warm and friendly practice date partner at a cozy cafe. Keep the conversation natural, ask open-ended questions about hobbies/interests, and keep responses concise and engaging."
-    elif "friendship" in persona_lower:
-        system_instruction = "You are a supportive friend. Practice conflict resolution, discuss boundaries, or handle sensitive friendship topics. Keep your reply brief, empathetic, and constructive."
-    elif "networking" in persona_lower:
-        system_instruction = "You are a professional networking partner at an industry conference. Introduce yourself, ask about the user's projects/skills, and keep responses direct and concise."
-    elif "speaking" in persona_lower:
-        system_instruction = "You are a public speaking coach. Help the user structure a presentation hook, transitions, or pacing. Keep your response short and educational."
-    else:
-        system_instruction = f"You are a helpful AI coach specializing in {context or 'social sync'}. Respond dynamically, keep it brief, and offer advice."
+        # Fallback: remove filler words and capitalise
+        if not reply or len(reply.strip()) < 10:
+            cleaned = input_lower
+            for filler in ["um", "uh", "like,", "maybe", "sort of", "kind of", "i guess", "i think maybe"]:
+                cleaned = cleaned.replace(filler, "").strip()
+            reply = cleaned.capitalize()
+            if not reply.endswith((".", "!", "?")):
+                reply += "."
 
-    # Handle first greeting
-    if is_initial:
-        if "interview" in persona_lower:
-            reply = "Welcome! Thank you for coming in today. I will be conducting your mock interview. To start, what specific role or technology stack are you interviewing for, and can you briefly share your background?"
-        elif "dating" in persona_lower:
-            reply = "Hey there! I'm your practice partner. Let's rehearse first-date conversations. Imagine we just met at a cozy cafe. How would you like to start?"
-        elif "friendship" in persona_lower:
-            reply = "Hi! Let's practice managing relationships and conflict. Imagine a friend hasn't replied to you in a week. How would you message them?"
-        elif "networking" in persona_lower:
-            reply = "Hello! Let's practice conference networking. Walk up, introduce yourself, and state what you do."
-        elif "speaking" in persona_lower:
-            reply = "Welcome! I'm your Public Speaking coach. Let's practice hooks and presentation transitions. Introduce your presentation topic in 2-3 strong sentences."
-        else:
-            coach_name = persona if "coach" in persona_lower else f"{persona} Coach"
-            reply = f"Hello! I am your {coach_name}. I'm here to help you navigate {context or 'communication'} challenges. What's on your mind?"
-        
+        reply = post_process_response(reply)
         add_session_message(user_msg=user_input, bot_msg=reply, session_id=session_id)
         return reply
 
-    history_text = ""
-    for u, b in history[-3:]:
-        history_text += f"User: {u}\nCoach: {b}\n"
-
-    # Separate prompts based on specific features/modes
-    if "rewrite" in persona_lower:
-        prompt = f"Rewrite this message clearly: {user_input}"
-    else:
-        # T5-Flan works best with very direct, simple instructions.
-        prompt = f"Write a helpful reply to this message: {user_input}"
-
-    try:
-        from tflite_inference import generate_tflite_reply
-        reply = generate_tflite_reply(prompt, temperature=0.0)
-    except Exception as e:
-        print(f"[AI Pipeline] Generation failed: {e}")
-        reply = "I couldn't generate a response right now. Please try again."
+    # ── All coaching/dialogue modes — use coaching_engine ────
+    reply = get_coaching_response(
+        user_input=user_input,
+        persona=persona,
+        context=context,
+        session_history=list(history[-3:]),
+    )
 
     reply = post_process_response(reply)
     add_session_message(user_msg=user_input, bot_msg=reply, session_id=session_id)
