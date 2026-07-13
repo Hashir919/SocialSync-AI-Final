@@ -1,0 +1,83 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ─── Virtual environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+backend/.venv/
+
+# ─── Environment files ────────────────────────────────────────────────────────
+.env
+.env.local
+.env.production
+backend/.env
+
+# ─── Flutter / Dart ───────────────────────────────────────────────────────────
+frontend/.dart_tool/
+frontend/build/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
+frontend/.packages
+frontend/pubspec.lock.bak
+*.class
+*.g.dart
+*.freezed.dart
+
+# ─── Android ─────────────────────────────────────────────────────────────────
+frontend/android/.gradle/
+frontend/android/local.properties
+frontend/android/key.properties
+frontend/android/app/debug/
+frontend/android/app/release/
+frontend/android/app/profile/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# ─── iOS ─────────────────────────────────────────────────────────────────────
+frontend/ios/Pods/
+frontend/ios/.symlinks/
+frontend/ios/Flutter/Flutter.framework
+frontend/ios/Flutter/Flutter.podspec
+*.ipa
+
+# ─── Build outputs ───────────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# ─── Editor / OS ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ─── Large AI model weight files (>100 MB) ────────────────────────────────────
+# These must be downloaded separately (see docs/model_setup.md).
+ai_models/*/pytorch_model.bin
+ai_models/*/flax_model.msgpack
+ai_models/*/tf_model.h5
+ai_models/*/model.safetensors
+ai_models/socialsync_reply_model.tflite
+
+# ─── Training artifacts (not needed for inference) ────────────────────────────
+*.ckpt
+*.pth
+training_logs/
+experiments/
+notebooks/
+datasets/
